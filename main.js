@@ -24,8 +24,9 @@ const PREFIX = '!';
 
 // Command definitions for better management
 const COMMANDS = {
-  TEST: 'test',
-  TESTPLAY: 'testplay',
+  TESTPING: 'ping',
+  PLAY: 'play',
+  PLAY_STAGE: 'play-stage',
   STOP: 'stop',
   LIST: 'list',
   SKIP: 'skip'
@@ -85,19 +86,14 @@ const guildAudioMap = new Map();
 
 // Command handlers for better organization
 const commandHandlers = {
-  [COMMANDS.TEST]: async (message) => {
+  [COMMANDS.TESTPING]: async (message) => {
     const sent = await message.reply('Working on it…');
     await sent.edit(
-      `✅ Test successful! 🏓 Latency: ${sent.createdTimestamp - message.createdTimestamp} ms`
+      `✅ TESTPING successful! 🏓 Latency: ${sent.createdTimestamp - message.createdTimestamp} ms`
     );
   },
 
-  [COMMANDS.TESTPLAY]: async (message) => {
-    const voiceChannel = message.member?.voice?.channel;
-    if (!voiceChannel) {
-      return message.reply('❌ You need to join a voice channel first!');
-    }
-
+  [COMMANDS.PLAY]: async (message) => {
     if (FILES.length === 0) {
       return message.reply('❌ No audio files found in the media directory.');
     }
@@ -113,7 +109,28 @@ const commandHandlers = {
     try {
       await playAudio(message, MUSIC_FILE, true); // true = loop by default
     } catch (error) {
-      console.error('❌ Error in testplay command:', error);
+      console.error('❌ Error in PLAY command:', error);
+      message.reply('Something went wrong trying to play the file.');
+    }
+  },
+
+  [COMMANDS.PLAY_STAGE]: async (message) => {
+    if (FILES.length === 0) {
+      return message.reply('❌ No audio files found in the media directory.');
+    }
+
+    const MUSIC_FILE = FILES[Math.floor(Math.random() * FILES.length)];
+    
+    try {
+      await fs.access(MUSIC_FILE.path);
+    } catch {
+      return message.reply('⚠️ Audio file not found or inaccessible at path: ' + MUSIC_FILE.path);
+    }
+
+    try {
+      await playAudio(message, MUSIC_FILE, true, true); // true = loop, true = use stage channel
+    } catch (error) {
+      console.error('❌ Error in PLAY_STAGE command:', error);
       message.reply('Something went wrong trying to play the file.');
     }
   },
@@ -128,10 +145,28 @@ const commandHandlers = {
     }
 
     try {
+      audioData.isPlaying = false; // Stop the loop
       audioData.player.stop(true);
       audioData.connection.destroy();
+      
+      // Delete the luma-music channel if it exists
+      if (audioData.createdChannel) {
+        try {
+          // If it's a stage channel, delete the stage instance first
+          if (audioData.isStage && audioData.createdChannel.stageInstance) {
+            await audioData.createdChannel.stageInstance.delete();
+            console.log('🗑️ Deleted stage instance');
+          }
+          
+          await audioData.createdChannel.delete();
+          console.log(`🗑️ Deleted ${audioData.isStage ? 'stage' : 'voice'} channel`);
+        } catch (error) {
+          console.error(`❌ Error deleting ${audioData.isStage ? 'stage' : 'voice'} channel:`, error);
+        }
+      }
+      
       guildAudioMap.delete(guildId);
-      await message.reply('🛑 Playback stopped and disconnected.');
+      await message.reply('🛑 Playback stopped, disconnected, and cleaned up channels.');
     } catch (error) {
       console.error('❌ Error stopping playback:', error);
       message.reply('Something went wrong trying to stop playback.');
@@ -194,8 +229,60 @@ const commandHandlers = {
 };
 
 // Unified audio playing function with loop support
-async function playAudio(message, musicFile, shouldLoop = false) {
-  const voiceChannel = message.member.voice.channel;
+async function playAudio(message, musicFile, shouldLoop = false, useStage = false) {
+  const guild = message.guild;
+  
+  const channelName = useStage ? 'luma-music-stage' : 'luma-music';
+  const channelType = useStage ? 13 : 2; // 13 = GUILD_STAGE_VOICE, 2 = GUILD_VOICE
+  
+  // Check if channel already exists
+  let voiceChannel = guild.channels.cache.find(channel => 
+    channel.name === channelName && channel.type === channelType
+  );
+  
+  // Create channel if it doesn't exist
+  if (!voiceChannel) {
+    try {
+      const channelOptions = {
+        name: channelName,
+        type: channelType,
+        permissionOverwrites: [
+          {
+            id: guild.id, // @everyone role
+            deny: useStage ? ['RequestToSpeak'] : ['Speak'], // Stage channels use RequestToSpeak
+            allow: ['ViewChannel', 'Connect']
+          },
+          {
+            id: message.client.user.id, // Bot's permissions
+            allow: useStage 
+              ? ['ViewChannel', 'Connect', 'Speak', 'RequestToSpeak', 'ManageChannels']
+              : ['ViewChannel', 'Connect', 'Speak']
+          }
+        ]
+      };
+
+      voiceChannel = await guild.channels.create(channelOptions);
+      
+      // If it's a stage channel, start a stage instance
+      if (useStage) {
+        try {
+          await voiceChannel.createStageInstance({
+            topic: '🎵 Luma Music Station',
+            privacyLevel: 1 // GUILD_ONLY
+          });
+          console.log('� Created stage instance for luma-music-stage');
+        } catch (stageError) {
+          console.error('❌ Error creating stage instance:', stageError);
+          // Continue anyway, the channel still works as a voice channel
+        }
+      }
+      
+      console.log(`🎵 Created ${useStage ? 'stage' : 'voice'} channel: ${channelName}`);
+    } catch (error) {
+      console.error(`❌ Error creating ${useStage ? 'stage' : 'voice'} channel:`, error);
+      return message.reply(`❌ Failed to create ${useStage ? 'stage' : 'music'} channel. Please check bot permissions.`);
+    }
+  }
   
   const connection = joinVoiceChannel({
     channelId: voiceChannel.id,
@@ -206,17 +293,38 @@ async function playAudio(message, musicFile, shouldLoop = false) {
 
   await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
 
+  // If it's a stage channel, make the bot a speaker
+  if (useStage) {
+    try {
+      // Wait a moment for the connection to fully establish
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Set the bot as a speaker in the stage
+      const member = guild.members.cache.get(message.client.user.id);
+      if (member && member.voice.channel) {
+        // Suppress the bot (make it a speaker)
+        await member.voice.setSuppressed(false);
+        console.log('🎤 Bot is now a speaker in the stage channel');
+      }
+    } catch (speakerError) {
+      console.error('❌ Error making bot a speaker:', speakerError);
+      // Continue anyway, audio might still work
+    }
+  }
+
   const player = createAudioPlayer({
     behaviors: { noSubscriber: NoSubscriberBehavior.Stop },
   });
 
-  // Store audio data with loop information
+  // Store audio data with loop information and created channel reference
   const audioData = { 
     connection, 
     player, 
     musicFile, 
     shouldLoop,
-    isPlaying: true 
+    isPlaying: true,
+    createdChannel: voiceChannel, // Store reference to delete later
+    isStage: useStage
   };
   guildAudioMap.set(message.guild.id, audioData);
 
@@ -228,9 +336,8 @@ async function playAudio(message, musicFile, shouldLoop = false) {
 
   // Initial play
   playTrack();
-
-  const loopText = shouldLoop ? ' (🔄 Looping)' : '';
-  await message.reply(`▶️ Playing **${musicFile.nameWithoutExt}**${loopText}…`);
+  const channelTypeText = useStage ? 'stage' : 'channel';
+  await message.reply(`▶️ Playing music in <#${voiceChannel.id}> ${channelTypeText} now...`);
 
   // Handle playback events
   player.on(AudioPlayerStatus.Idle, () => {
@@ -245,7 +352,23 @@ async function playAudio(message, musicFile, shouldLoop = false) {
       connection.subscribe(player);
       player.play(resource);
     } else {
+      // Clean up when stopping
       connection.destroy();
+      
+      // Delete the luma-music channel if it exists
+      if (currentAudioData && currentAudioData.createdChannel) {
+        // If it's a stage channel, delete the stage instance first
+        if (currentAudioData.isStage && currentAudioData.createdChannel.stageInstance) {
+          currentAudioData.createdChannel.stageInstance.delete()
+            .then(() => console.log('🗑️ Deleted stage instance'))
+            .catch(error => console.error('❌ Error deleting stage instance:', error));
+        }
+        
+        currentAudioData.createdChannel.delete()
+          .then(() => console.log(`🗑️ Deleted ${currentAudioData.isStage ? 'stage' : 'voice'} channel on playback end`))
+          .catch(error => console.error('❌ Error deleting channel on idle:', error));
+      }
+      
       guildAudioMap.delete(message.guild.id);
       console.log('🔇 Playback finished, left voice channel.');
     }
@@ -253,7 +376,24 @@ async function playAudio(message, musicFile, shouldLoop = false) {
 
   player.on('error', (error) => {
     console.error('❌ Audio player error:', error);
+    const currentAudioData = guildAudioMap.get(message.guild.id);
+    
     connection.destroy();
+    
+    // Delete the luma-music channel if it exists
+    if (currentAudioData && currentAudioData.createdChannel) {
+      // If it's a stage channel, delete the stage instance first
+      if (currentAudioData.isStage && currentAudioData.createdChannel.stageInstance) {
+        currentAudioData.createdChannel.stageInstance.delete()
+          .then(() => console.log('🗑️ Deleted stage instance due to error'))
+          .catch(error => console.error('❌ Error deleting stage instance on error:', error));
+      }
+      
+      currentAudioData.createdChannel.delete()
+        .then(() => console.log(`🗑️ Deleted ${currentAudioData.isStage ? 'stage' : 'voice'} channel due to error`))
+        .catch(error => console.error('❌ Error deleting channel on error:', error));
+    }
+    
     guildAudioMap.delete(message.guild.id);
   });
 }
