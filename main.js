@@ -127,7 +127,7 @@ const commandHandlers = {
       return message.reply('❌ I am not currently playing anything.');
     }
 
-    try {
+/*     try {
       audioData.player.stop(true);
       audioData.connection.destroy();
       guildAudioMap.delete(guildId);
@@ -135,7 +135,7 @@ const commandHandlers = {
     } catch (error) {
       console.error('❌ Error stopping playback:', error);
       message.reply('Something went wrong trying to stop playback.');
-    }
+    } */
   },
 
   [COMMANDS.LIST]: async (message) => {
