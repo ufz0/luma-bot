@@ -21,9 +21,14 @@ const { DISCORD_TOKEN } = process.env;
 const { ENVIRONMENT } = process.env
 
 const PREFIX = '!';
-const TEST_CMD = 'test';
-const TESTPLAY_CMD = 'testplay';
-const STOP_CMD = 'stop';
+
+// Command definitions for better management
+const COMMANDS = {
+  TEST: 'test',
+  TESTPLAY: 'testplay',
+  STOP: 'stop',
+  LIST: 'list'
+};
 
 let MEDIA_PATH
 if(ENVIRONMENT === 'dev'){
@@ -77,84 +82,42 @@ const client = new Client({
 
 const guildAudioMap = new Map();
 
-client.once('ready', async () => {
-  console.log(`🤖 Logged in as ${client.user.tag}`);
-  console.log('Indexing media...')
-  await loadMediaFiles();
-  console.log('')
-});
-
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-
-  const content = message.content.trim().toLowerCase();
-
-  if (content === `${PREFIX}${TEST_CMD}`) {
+// Command handlers for better organization
+const commandHandlers = {
+  [COMMANDS.TEST]: async (message) => {
     const sent = await message.reply('Working on it…');
     await sent.edit(
       `✅ Test successful! 🏓 Latency: ${sent.createdTimestamp - message.createdTimestamp} ms`
     );
-    return;
-  }
+  },
 
-  if (content === `${PREFIX}${TESTPLAY_CMD}`) {
+  [COMMANDS.TESTPLAY]: async (message) => {
     const voiceChannel = message.member?.voice?.channel;
     if (!voiceChannel) {
       return message.reply('❌ You need to join a voice channel first!');
     }
-    let MUSIC_FILE
+
+    if (FILES.length === 0) {
+      return message.reply('❌ No audio files found in the media directory.');
+    }
+
+    const MUSIC_FILE = FILES[Math.floor(Math.random() * FILES.length)];
+    
     try {
-        MUSIC_FILE = FILES[Math.floor(Math.random()*FILES.length)].path
-        
-      await fs.access(MUSIC_FILE);
+      await fs.access(MUSIC_FILE.path);
     } catch {
-      return message.reply('⚠️ Audio file `test.mp3` not found or inaccessible. Path:' + MUSIC_FILE);
+      return message.reply('⚠️ Audio file not found or inaccessible at path: ' + MUSIC_FILE.path);
     }
 
     try {
-      
-      const connection = joinVoiceChannel({
-        channelId: voiceChannel.id,
-        guildId: voiceChannel.guild.id,
-        adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-        selfDeaf: true,
-      });
-
-      
-      await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
-
-
-      const player = createAudioPlayer({
-        behaviors: { noSubscriber: NoSubscriberBehavior.Stop },
-      });
-      const resource = createAudioResource(MUSIC_FILE, { inputType: 'arbitrary' });
-
-      connection.subscribe(player);
-      player.play(resource);
-
-      guildAudioMap.set(message.guild.id, { connection, player });
-
-      await message.reply('▶️ Playing test.mp3…');
-
-      player.on(AudioPlayerStatus.Idle, () => {
-        connection.destroy();
-        guildAudioMap.delete(message.guild.id);
-        console.log('🔇 Playback finished, left voice channel.');
-      });
-
-      player.on('error', (error) => {
-        console.error('❌ Audio player error:', error);
-        connection.destroy();
-        guildAudioMap.delete(message.guild.id);
-      });
+      await playAudio(message, MUSIC_FILE, true); // true = loop by default
     } catch (error) {
-      console.error('❌ Error connecting or playing audio:', error);
+      console.error('❌ Error in testplay command:', error);
       message.reply('Something went wrong trying to play the file.');
     }
-    return;
-  }
+  },
 
-  if (content === `${PREFIX}${STOP_CMD}`) {
+  [COMMANDS.STOP]: async (message) => {
     const guildId = message.guild?.id;
     if (!guildId) return;
 
@@ -171,6 +134,112 @@ client.on('messageCreate', async (message) => {
     } catch (error) {
       console.error('❌ Error stopping playback:', error);
       message.reply('Something went wrong trying to stop playback.');
+    }
+  },
+
+  [COMMANDS.LIST]: async (message) => {
+    if (FILES.length === 0) {
+      return message.reply('❌ No audio files found in the media directory.');
+    }
+    
+    const fileList = FILES.slice(0, 20) // Limit to first 20 files to avoid message length issues
+      .map((file, index) => `${index + 1}. ${file.nameWithoutExt}`)
+      .join('\n');
+    
+    const totalFiles = FILES.length;
+    const displayMessage = totalFiles > 20 
+      ? `🎵 **Available files** (showing first 20 of ${totalFiles}):\n\`\`\`\n${fileList}\n\`\`\``
+      : `🎵 **Available files** (${totalFiles} total):\n\`\`\`\n${fileList}\n\`\`\``;
+    
+    return message.reply(displayMessage);
+  }
+};
+
+// Unified audio playing function with loop support
+async function playAudio(message, musicFile, shouldLoop = false) {
+  const voiceChannel = message.member.voice.channel;
+  
+  const connection = joinVoiceChannel({
+    channelId: voiceChannel.id,
+    guildId: voiceChannel.guild.id,
+    adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+    selfDeaf: true,
+  });
+
+  await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+
+  const player = createAudioPlayer({
+    behaviors: { noSubscriber: NoSubscriberBehavior.Stop },
+  });
+
+  // Store audio data with loop information
+  const audioData = { 
+    connection, 
+    player, 
+    musicFile, 
+    shouldLoop,
+    isPlaying: true 
+  };
+  guildAudioMap.set(message.guild.id, audioData);
+
+  const playTrack = () => {
+    const resource = createAudioResource(musicFile.path, { inputType: 'arbitrary' });
+    connection.subscribe(player);
+    player.play(resource);
+  };
+
+  // Initial play
+  playTrack();
+
+  const loopText = shouldLoop ? ' (🔄 Looping)' : '';
+  await message.reply(`▶️ Playing **${musicFile.nameWithoutExt}**${loopText}…`);
+
+  // Handle playback events
+  player.on(AudioPlayerStatus.Idle, () => {
+    const currentAudioData = guildAudioMap.get(message.guild.id);
+    if (currentAudioData && currentAudioData.shouldLoop && currentAudioData.isPlaying) {
+      console.log(`🔄 Looping: ${musicFile.name}`);
+      playTrack(); // Restart the same track
+    } else {
+      connection.destroy();
+      guildAudioMap.delete(message.guild.id);
+      console.log('🔇 Playback finished, left voice channel.');
+    }
+  });
+
+  player.on('error', (error) => {
+    console.error('❌ Audio player error:', error);
+    connection.destroy();
+    guildAudioMap.delete(message.guild.id);
+  });
+}
+
+client.once('ready', async () => {
+  console.log(`🤖 Logged in as ${client.user.tag}`);
+  console.log('Indexing media...')
+  await loadMediaFiles();
+  console.log('')
+});
+
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+
+  const content = message.content.trim().toLowerCase();
+  
+  // Check if message starts with prefix
+  if (!content.startsWith(PREFIX)) return;
+  
+  // Extract command from message
+  const command = content.slice(PREFIX.length);
+  
+  // Find and execute command handler
+  const handler = commandHandlers[command];
+  if (handler) {
+    try {
+      await handler(message);
+    } catch (error) {
+      console.error(`❌ Error executing command ${command}:`, error);
+      message.reply('❌ Something went wrong executing that command.');
     }
   }
 });
