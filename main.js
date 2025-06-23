@@ -67,7 +67,7 @@ client.on('messageCreate', async (message) => {
     }
 
     try {
-      // Join voice channel
+      
       const connection = joinVoiceChannel({
         channelId: voiceChannel.id,
         guildId: voiceChannel.guild.id,
@@ -75,10 +75,10 @@ client.on('messageCreate', async (message) => {
         selfDeaf: false,
       });
 
-      // Wait until the connection is ready
+      
       await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
 
-      // Create player and resource
+
       const player = createAudioPlayer({
         behaviors: { noSubscriber: NoSubscriberBehavior.Stop },
       });
@@ -87,7 +87,6 @@ client.on('messageCreate', async (message) => {
       connection.subscribe(player);
       player.play(resource);
 
-      // Save for stop command
       guildAudioMap.set(message.guild.id, { connection, player });
 
       await message.reply('▶️ Playing test.mp3…');
@@ -120,7 +119,7 @@ client.on('messageCreate', async (message) => {
     }
 
     try {
-      audioData.player.stop(true); // Stop immediately
+      audioData.player.stop(true);
       audioData.connection.destroy();
       guildAudioMap.delete(guildId);
       await message.reply('🛑 Playback stopped and disconnected.');
@@ -130,5 +129,6 @@ client.on('messageCreate', async (message) => {
     }
   }
 });
+
 
 client.login(DISCORD_TOKEN);
