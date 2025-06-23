@@ -117,7 +117,7 @@ client.on('messageCreate', async (message) => {
         channelId: voiceChannel.id,
         guildId: voiceChannel.guild.id,
         adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-        selfDeaf: false,
+        selfDeaf: true,
       });
 
       
