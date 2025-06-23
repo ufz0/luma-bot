@@ -12,17 +12,57 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import 'dotenv/config';
+import { FILE } from 'dns';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const { DISCORD_TOKEN } = process.env;
+const { ENVIRONMENT } = process.env
 
 const PREFIX = '!';
 const TEST_CMD = 'test';
 const TESTPLAY_CMD = 'testplay';
 const STOP_CMD = 'stop';
-const MUSIC_FILE = path.join(__dirname, 'music', 'test.mp3');
+
+let MEDIA_PATH
+if(ENVIRONMENT === 'dev'){
+    MEDIA_PATH = "./music/"; // For Development
+}else {
+    MEDIA_PATH = "/mnt/fusion/discord-bot-music/background/" // For production
+}
+
+
+
+
+let FILES = []
+
+// Function to scan media directory and populate FILES array
+async function loadMediaFiles() {
+  try {
+    const files = await fs.readdir(MEDIA_PATH);
+    FILES = files
+      .filter(file => {
+        // Filter for common audio file extensions
+        const ext = path.extname(file).toLowerCase();
+        return ['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac'].includes(ext);
+      })
+      .map(file => ({
+        name: file,
+        path: path.join(MEDIA_PATH, file),
+        nameWithoutExt: path.basename(file, path.extname(file))
+      }));
+    
+    console.log(`📁 Loaded ${FILES.length} audio files from media directory`);
+    FILES.forEach(file => console.log(`  - ${file.name}`));
+  } catch (error) {
+    console.error('❌ Error loading media files:', error);
+    FILES = []; // Keep FILES as empty array if directory can't be read
+  }
+
+}
+
+
 
 const client = new Client({
   intents: [
@@ -34,11 +74,14 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
-// Store connections and players by guild ID
+
 const guildAudioMap = new Map();
 
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);
+  console.log('Indexing media...')
+  await loadMediaFiles();
+  console.log('')
 });
 
 client.on('messageCreate', async (message) => {
@@ -59,11 +102,13 @@ client.on('messageCreate', async (message) => {
     if (!voiceChannel) {
       return message.reply('❌ You need to join a voice channel first!');
     }
-
+    let MUSIC_FILE
     try {
+        MUSIC_FILE = FILES[Math.floor(Math.random()*FILES.length)].path
+        
       await fs.access(MUSIC_FILE);
     } catch {
-      return message.reply('⚠️ Audio file `test.mp3` not found or inaccessible.');
+      return message.reply('⚠️ Audio file `test.mp3` not found or inaccessible. Path:' + MUSIC_FILE);
     }
 
     try {

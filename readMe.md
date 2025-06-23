@@ -1,5 +1,5 @@
 ### Information about Luma 
-REDACTED
+Coming soon!
 
 ### Requirements
 - NodeJS
