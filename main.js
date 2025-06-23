@@ -27,7 +27,8 @@ const COMMANDS = {
   TEST: 'test',
   TESTPLAY: 'testplay',
   STOP: 'stop',
-  LIST: 'list'
+  LIST: 'list',
+  SKIP: 'skip'
 };
 
 let MEDIA_PATH
@@ -152,6 +153,43 @@ const commandHandlers = {
       : `🎵 **Available files** (${totalFiles} total):\n\`\`\`\n${fileList}\n\`\`\``;
     
     return message.reply(displayMessage);
+  },
+
+  [COMMANDS.SKIP]: async (message) => {
+    const guildId = message.guild?.id;
+    if (!guildId) return;
+
+    const audioData = guildAudioMap.get(guildId);
+    if (!audioData) {
+      return message.reply('❌ I am not currently playing anything to skip.');
+    }
+
+    if (FILES.length === 0) {
+      return message.reply('❌ No audio files found in the media directory.');
+    }
+
+    // Get a new random file
+    const MUSIC_FILE = FILES[Math.floor(Math.random() * FILES.length)];
+    
+    try {
+      await fs.access(MUSIC_FILE.path);
+    } catch {
+      return message.reply('⚠️ Audio file not found or inaccessible at path: ' + MUSIC_FILE.path);
+    }
+
+    try {
+      // Update the current audio data with new file
+      audioData.musicFile = MUSIC_FILE;
+      
+      // Stop current playback and start new track
+      audioData.player.stop();
+      
+      // The playback will automatically restart with the new track due to the loop logic
+      await message.reply(`⏭️ Skipped to **${MUSIC_FILE.nameWithoutExt}** (🔄 Looping)…`);
+    } catch (error) {
+      console.error('❌ Error in skip command:', error);
+      message.reply('Something went wrong trying to skip the track.');
+    }
   }
 };
 
@@ -198,8 +236,14 @@ async function playAudio(message, musicFile, shouldLoop = false) {
   player.on(AudioPlayerStatus.Idle, () => {
     const currentAudioData = guildAudioMap.get(message.guild.id);
     if (currentAudioData && currentAudioData.shouldLoop && currentAudioData.isPlaying) {
-      console.log(`🔄 Looping: ${musicFile.name}`);
-      playTrack(); // Restart the same track
+      // Use the current musicFile from audioData (might have been updated by skip)
+      const currentMusicFile = currentAudioData.musicFile;
+      console.log(`🔄 Looping: ${currentMusicFile.name}`);
+      
+      // Create new resource with the current music file
+      const resource = createAudioResource(currentMusicFile.path, { inputType: 'arbitrary' });
+      connection.subscribe(player);
+      player.play(resource);
     } else {
       connection.destroy();
       guildAudioMap.delete(message.guild.id);
